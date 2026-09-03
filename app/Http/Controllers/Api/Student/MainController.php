@@ -13,7 +13,6 @@ use App\Http\Services\PaymobService;
 use App\Models\Course;
 use App\Models\Lesson;
 use App\Models\Teacher;
-use App\Models\Transaction;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -23,218 +22,241 @@ class MainController extends Controller
 
     public function __construct()
     {
-        $this->student = auth("student")->user();
+        $this->student = auth('student')->user();
     }
 
     public function rateTeacher(RatingRequest $request, $teacher_id)
     {
-
         $request->validated();
-
         $teacher = Teacher::find($teacher_id);
 
-        if (!is_numeric($teacher_id) || !$teacher) {
-            return failResponse("not found teacher");
+        if (!$teacher || !is_numeric($teacher_id)) {
+            return failResponse('not found teacher');
         }
 
         $this->student->teacherRatings()->attach($teacher_id, [
-            "rate" => $request->rate,
-            "description" => $request->description,
+            'rate' => $request->rate,
+            'description' => $request->description,
         ]);
 
-        return successResponse("success add rate");
+        return successResponse('success add rate');
     }
 
     public function allGivenRatings()
     {
         $ratings = Teacher::all()->map(function ($item) {
-            return $item->studentRatingsAboutMe()->where("students.id", '=', $this->student->id)->get();
-        })
-            ->flatten()
-            ->sortByDesc(function ($item) {
-                $item->pivot->created_at;
-            });
+            return $item->studentRatingsAboutMe()->where('students.id', '=', $this->student->id)->get();
+        })->flatten()->sortByDesc('pivot.created_at');
 
         return successResponse(data: RatingResource::collection($ratings));
     }
 
     public function allReceivedRatings()
     {
-        $ratings = $this->student->teacherRatingsAboutMe()->orderByPivot("created_at", 'desc')->get();
+        $ratings = $this->student->teacherRatingsAboutMe()->orderByPivot('created_at', 'desc')->get();
 
         return successResponse(data: RatingResource::collection($ratings));
     }
 
     public function intiatePayment(PaymentInitiateRequest $request)
     {
-        $request->validated();
+        $validated = $request->validated();
+        $orderable = $validated['orderable_type'] === 'lessons'
+            ? Lesson::query()->find($validated['orderable_id'])
+            : Course::query()->find($validated['orderable_id']);
 
-        $orderable = null;
-
-        $enrolled = false;
-
-        $data = [
-            "name" => $this->student->name,
-            "email" => $this->student->email,
-            "phone" => $this->student->phone,
-            "orderable_id" => $request->input("orderable_id"),
-            "orderable_type" => $request->input("orderable_type"),
-            "amount" => $request->input("amount"),
-            "student_id" => $this->student->id,
-        ];
-
-        if ($request->input("orderable_type") == "lessons") {
-            $orderable = Lesson::find($request->input("orderable_id"));
-
-            $enrolled = $this->student->enrollingLessons()
-                ->where("lessons.id", "=", $request->input("orderable_id"))
-                ->exists();
+        if (!$orderable) {
+            return failResponse('not found resource');
         }
 
-        if ($request->input("orderable_type") == "courses") {
-
-            $orderable = Course::find($request->input("orderable_id"));
-
-            $enrolled = $this->student->enrollingCourses()
-                ->where("courses.id", "=", $request->input("orderable_id"))
-                ->exists();
+        $price = (float) $orderable->price;
+        if ($price <= 0) {
+            return failResponse('this resource is free');
         }
+
+        $enrolled = $validated['orderable_type'] === 'lessons'
+            ? $this->student->enrollingLessons()->whereKey($orderable->id)->exists()
+            : $this->student->enrollingCourses()->whereKey($orderable->id)->exists();
 
         if ($enrolled) {
-            return failResponse("you are  enrolled in this course");
+            return failResponse('you are already enrolled in this resource');
         }
 
-        $paymentData = (new PaymobService())->generatePaymentData($data);
+        $data = [
+            'name' => $this->student->name,
+            'email' => $this->student->email,
+            'phone' => $this->student->phone,
+            'orderable_id' => $orderable->id,
+            'orderable_type' => $validated['orderable_type'],
+            'amount' => $price,
+            'student_id' => $this->student->id,
+        ];
 
-        $orderable->orders()->create([
-            "student_id" => $this->student->id,
-            "amount" => $request->input("amount"),
-            "paymob_order_id" => $paymentData["orderId"],
-            "status" => PaymentStatusEnums::PENDING,
-        ]);
+        try {
+            $paymob = new PaymobService();
+            $paymentData = $paymob->generatePaymentData($data);
 
-        $paymentResource = (new PaymobService())->payWithPaymob($paymentData["paymentToken"], $request->input("wallet_number"));
+            $orderable->orders()->create([
+                'student_id' => $this->student->id,
+                'amount' => $price,
+                'paymob_order_id' => $paymentData['orderId'],
+                'status' => PaymentStatusEnums::PENDING,
+            ]);
 
-        return successResponse("please check your wallet", [
-            "redirect_url" => $paymentResource["redirect_url"],
+            $paymentResource = $paymob->payWithPaymob(
+                $paymentData['paymentToken'],
+                $validated['wallet_number']
+            );
+        } catch (\Throwable $exception) {
+            report($exception);
+            return failResponse('Unable to initialize payment. Please try again.');
+        }
+
+        return successResponse('please check your wallet', [
+            'redirect_url' => $paymentResource['redirect_url'] ?? null,
         ]);
     }
 
     public function callbackPayment(Request $request)
     {
-        if (!$request->hmac || !$request->id || !$request->order) {
-            return failResponse("invalid request");
+        $hmac = (string) $request->input('hmac');
+        if ($hmac === '') {
+            return failResponse('invalid request');
         }
 
-        if (!$request->success) {
-            return failResponse("payment failed");
+        try {
+            $paymob = new PaymobService();
+            if (!$paymob->verifyHmac($request->all(), $hmac)) {
+                return failResponse('invalid payment signature');
+            }
+        } catch (\Throwable $exception) {
+            report($exception);
+            return failResponse('payment verification failed');
         }
 
-        $order = $this->student->orders()->where([
-            ["paymob_order_id", "=", $request->order],
-            ["status", "=", PaymentStatusEnums::PENDING],
-        ])->first();
+        $transactionId = (int) $request->input('id');
+        $paymobOrderId = (int) $request->input('order');
+        if ($transactionId <= 0 || $paymobOrderId <= 0) {
+            return failResponse('invalid request');
+        }
+
+        $order = $this->student->orders()
+            ->where('paymob_order_id', $paymobOrderId)
+            ->first();
 
         if (!$order) {
-            return failResponse("not found order or already paid");
+            return failResponse('not found order');
         }
 
-        $orderable = $order->orderable;
+        if ($order->status === PaymentStatusEnums::SUCCESS) {
+            return successResponse('payment already processed');
+        }
 
-        DB::transaction(function () use ($orderable, $order, $request) {
-
+        if (!$request->boolean('success')) {
             $order->update([
-                "status" => PaymentStatusEnums::SUCCESS,
-                "transaction_id" => $request->id,
+                'transaction_id' => $transactionId,
+                'status' => PaymentStatusEnums::FAILED,
             ]);
 
-            if ($orderable->getTable() == "lessons") {
-                $this->student->enrollingLessons()->attach($orderable->id);
+            return failResponse('payment failed');
+        }
+
+        if ((int) $request->input('amount_cents') !== (int) round(((float) $order->amount) * 100)) {
+            return failResponse('payment amount mismatch');
+        }
+
+        DB::transaction(function () use ($order, $transactionId) {
+            $freshOrder = $order->newQuery()->lockForUpdate()->findOrFail($order->id);
+
+            if ($freshOrder->status === PaymentStatusEnums::SUCCESS) {
+                return;
             }
 
-            if ($orderable->getTable() == "courses") {
-                $this->student->enrollingCourses()->attach($orderable->id);
-            }
+            $orderable = $freshOrder->orderable;
 
-            $total = $order->amount;
-
-            $commission = 0.10;
-
-            $teacher_amount = $total - ($total * $commission);
-
-            $platform_amount = $total * $commission;
-
-            $orderable->teacher->transactions()->create([
-                "total" => $total,
-                "commission" => $commission,
-                "teacher_amount" => $teacher_amount,
-                "commission_amount" => $platform_amount,
+            $freshOrder->update([
+                'status' => PaymentStatusEnums::SUCCESS,
+                'transaction_id' => $transactionId,
             ]);
-        
+
+            if ($orderable->getTable() === 'lessons') {
+                $this->student->enrollingLessons()->syncWithoutDetaching([$orderable->id]);
+            } else {
+                $this->student->enrollingCourses()->syncWithoutDetaching([$orderable->id]);
+            }
+
+            $total = (float) $freshOrder->amount;
+            $commissionRate = (float) config('business.commission_rate', 0.10);
+            $teacherAmount = round($total * (1 - $commissionRate), 2);
+            $platformAmount = round($total - $teacherAmount, 2);
+
+            $orderable->teacher->transactions()->firstOrCreate(
+                ['order_id' => $freshOrder->id],
+                [
+                    'total' => $total,
+                    'commission' => $commissionRate,
+                    'teacher_amount' => $teacherAmount,
+                    'commission_amount' => $platformAmount,
+                ]
+            );
         });
 
-        return successResponse("payment success and you are enrolled in this course");
+        return successResponse('payment success and you are enrolled in this course');
     }
 
     public function enrollingLessons()
     {
-        $enrollingLessons = $this->student->enrollingLessons()->orderByPivot("created_at", "desc")->get();
+        $enrollingLessons = $this->student->enrollingLessons()->orderByPivot('created_at', 'desc')->get();
 
         return successResponse(data: LessonReource::collection($enrollingLessons));
     }
 
     public function enrollingCourses()
     {
-        $enrollingCourses = $this->student->enrollingCourses()->orderByPivot("created_at", "desc")->get();
+        $enrollingCourses = $this->student->enrollingCourses()->orderByPivot('created_at', 'desc')->get();
 
         return successResponse(data: CourseResource::collection($enrollingCourses));
     }
 
     public function enrollLesson($lesson_id)
     {
+        $lesson = Lesson::find($lesson_id);
 
-        $lsesson = Lesson::find($lesson_id);
-
-        if (!$lsesson || !is_numeric($lesson_id)) {
-            return failResponse("not found lesson");
+        if (!$lesson || !is_numeric($lesson_id)) {
+            return failResponse('not found lesson');
         }
 
-        $existsLesson = $this->student->enrollingLessons()->where("lessons.id", "=", $lesson_id)->exists();
-
-        if ($existsLesson) {
-            return failResponse("you are already enrolled in this lesson");
+        if ($this->student->enrollingLessons()->whereKey($lesson_id)->exists()) {
+            return failResponse('you are already enrolled in this lesson');
         }
 
-        if ((int) $lsesson->price > 0) {
-            return failResponse("this lesson is paid lesson");
+        if ((float) $lesson->price > 0) {
+            return failResponse('this lesson is paid lesson');
         }
 
-        $this->student->enrollingLessons()->attach($lesson_id);
+        $this->student->enrollingLessons()->syncWithoutDetaching([$lesson_id]);
 
-        return successResponse("success enroll in this lesson");
+        return successResponse('success enroll in this lesson');
     }
 
     public function enrollCourse($course_id)
     {
-
         $course = Course::find($course_id);
 
         if (!$course || !is_numeric($course_id)) {
-            return failResponse("not found course");
+            return failResponse('not found course');
         }
 
-        $existsCourse = $this->student->enrollingCourses()->where("courses.id", "=", $course_id)->exists();
-
-        if ($existsCourse) {
-            return failResponse("you are already enrolled in this course");
+        if ($this->student->enrollingCourses()->whereKey($course_id)->exists()) {
+            return failResponse('you are already enrolled in this course');
         }
 
-        if ((int) $course->price > 0) {
-            return failResponse("this course is paid course");
+        if ((float) $course->price > 0) {
+            return failResponse('this course is paid course');
         }
 
-        $this->student->enrollingCourses()->attach($course->id);
+        $this->student->enrollingCourses()->syncWithoutDetaching([$course->id]);
 
-        return successResponse("success enroll in this course");
+        return successResponse('success enroll in this course');
     }
 }
