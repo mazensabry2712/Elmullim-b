@@ -66,6 +66,9 @@ Route::group(['prefix' => 'student'], function () {
     Route::post('/forget-password', [StudentAuthController::class, 'forgetPassword'])->middleware('throttleApi:1,1');
     Route::post('/reset-password', [StudentAuthController::class, 'resetPassword'])->middleware('throttleApi:5,1');
 
+    // Paymob server-to-server webhook: authenticated by HMAC, not by a student token.
+    Route::post('/payment/callback', [StudentMainController::class, 'callbackPayment']);
+
     Route::middleware('auth:student')->group(function () {
         Route::post('/verification-email/verify', [StudentAuthController::class, 'verifyCode'])->middleware('throttleApi:5,1');
         Route::post('/logout', [StudentAuthController::class, 'logout']);
@@ -80,7 +83,6 @@ Route::group(['prefix' => 'student'], function () {
             });
             Route::group(['prefix' => 'payment'], function () {
                 Route::post('/intiate', [StudentMainController::class, 'intiatePayment'])->middleware('throttleApi:1,1');
-                Route::post('/callback', [StudentMainController::class, 'callbackPayment']);
                 Route::get('/callback', [StudentMainController::class, 'paymentResult']);
             });
             Route::group(['prefix' => 'enrolling'], function () {
