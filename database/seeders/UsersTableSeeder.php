@@ -12,10 +12,13 @@ class UsersTableSeeder extends Seeder
      */
     public function run(): void
     {
-        User::factory()->create([
-            'name' => 'Admin User',
-            'email' => 'admin@elmullim.com',
-            'password' => '12345678',
-        ]);
+        User::updateOrCreate(
+            ['email' => 'admin@elmullim.com'],
+            [
+                'name' => 'Admin User',
+                'password' => '12345678',
+                'email_verified_at' => now(),
+            ]
+        );
     }
 }
