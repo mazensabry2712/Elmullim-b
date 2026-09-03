@@ -38,9 +38,7 @@ class PaymobService
     public function generateAuthToken(): string
     {
         $response = $this->client->post($this->baseUrl . '/auth/tokens', [
-            'json' => [
-                'api_key' => $this->apiKey,
-            ],
+            'json' => ['api_key' => $this->apiKey],
         ]);
 
         return (string) json_decode((string) $response->getBody(), true, 512, JSON_THROW_ON_ERROR)['token'];
@@ -122,6 +120,15 @@ class PaymobService
         return json_decode((string) $response->getBody(), true, 512, JSON_THROW_ON_ERROR);
     }
 
+    private function hmacValue(mixed $value): string
+    {
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        return (string) $value;
+    }
+
     public function verifyHmac(array $payload, string $providedHmac): bool
     {
         if ($this->hmacSecret === '' || $providedHmac === '') {
@@ -155,7 +162,8 @@ class PaymobService
             $transaction['success'] ?? '',
         ];
 
-        $calculated = hash_hmac('sha512', implode('', array_map(static fn ($value) => strtolower((string) $value), $values)), $this->hmacSecret);
+        $raw = implode('', array_map(fn ($value) => $this->hmacValue($value), $values));
+        $calculated = hash_hmac('sha512', $raw, $this->hmacSecret);
 
         return hash_equals(strtolower($calculated), strtolower($providedHmac));
     }
