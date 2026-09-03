@@ -9,23 +9,31 @@ class Transaction extends Model
     protected $table = 'transactions';
 
     protected $fillable = [
-        "total",
-        "teacher_id",
-        "commission",
-        "teacher_amount",
-        "commission_amount"
+        'order_id',
+        'total',
+        'teacher_id',
+        'commission',
+        'teacher_amount',
+        'commission_amount',
     ];
 
-    public function teacher(){
-        return $this->belongsTo(Teacher::class,"teacher_id");
+    public function teacher()
+    {
+        return $this->belongsTo(Teacher::class, 'teacher_id');
     }
 
-    protected function casts(){
+    public function order()
+    {
+        return $this->belongsTo(Order::class);
+    }
+
+    protected function casts()
+    {
         return [
-            "commission"=> "float",
-            "total"=> "float",
-            "teacher_amount"=> "float",
-            "commission_amount"=> "float",
+            'commission' => 'float',
+            'total' => 'float',
+            'teacher_amount' => 'float',
+            'commission_amount' => 'float',
         ];
     }
 }
