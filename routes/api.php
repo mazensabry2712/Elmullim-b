@@ -80,7 +80,8 @@ Route::group(['prefix' => 'student'], function () {
             });
             Route::group(['prefix' => 'payment'], function () {
                 Route::post('/intiate', [StudentMainController::class, 'intiatePayment'])->middleware('throttleApi:1,1');
-                Route::get('/callback', [StudentMainController::class, 'callbackPayment']);
+                Route::post('/callback', [StudentMainController::class, 'callbackPayment']);
+                Route::get('/callback', [StudentMainController::class, 'paymentResult']);
             });
             Route::group(['prefix' => 'enrolling'], function () {
                 Route::get('/lessons', [StudentMainController::class, 'enrollingLessons']);
