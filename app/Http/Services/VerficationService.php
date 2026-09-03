@@ -6,54 +6,49 @@ use App\Enums\VerificationTypeEnums;
 use App\Mail\PasswordResetVerification;
 use App\Mail\SendEmailVerificationCode;
 use Illuminate\Support\Facades\Mail;
+
 class VerficationService
 {
-    public function generateCode()
+    public function generateCode(): int
     {
-        $code = rand(111111, 999999);
-        
-        return $code;
-    }
-    public function sendEmailVerificationCode($user)
-    {
-        $code = $this->generateCode();
-
-        if($user->verifications->count() > 0 ){
-            $user->verifications()->where("uses",'=',0)->get()->map(function ($verification) {
-                $verification->update([
-                    "uses"=>1,
-                ]);
-            });
-        }
-
-        $user->verifications()->create([
-            "code"=>$code,
-            "expired_at"=>now()->addHour(),
-            "type"=>VerificationTypeEnums::Email,
-        ]);
-
-        Mail::to($user)->send(new SendEmailVerificationCode($code));
+        return random_int(100000, 999999);
     }
 
-    public function sendResetPasswordVerificationCode($user)
+    public function sendEmailVerificationCode($user): void
     {
         $code = $this->generateCode();
 
-        if($user->verifications->count() > 0 ){
-            $user->verifications()->where("uses",'=',0)->get()->map(function ($verification) {
-                $verification->update([
-                    "uses"=>1,
-                ]);
-            });
-        }
+        $user->verifications()
+            ->where('type', VerificationTypeEnums::Email)
+            ->where('uses', 0)
+            ->update(['uses' => 1]);
 
         $user->verifications()->create([
-            "code"=>$code,
-            "expired_at"=>now()->addHour(),
-            "type"=>VerificationTypeEnums::Password,
+            'code' => $code,
+            'expired_at' => now()->addHour(),
+            'type' => VerificationTypeEnums::Email,
+            'uses' => 0,
         ]);
 
-        Mail::to($user)->send(new PasswordResetVerification($code));
+        Mail::to($user)->queue(new SendEmailVerificationCode($code));
     }
 
+    public function sendResetPasswordVerificationCode($user): void
+    {
+        $code = $this->generateCode();
+
+        $user->verifications()
+            ->where('type', VerificationTypeEnums::Password)
+            ->where('uses', 0)
+            ->update(['uses' => 1]);
+
+        $user->verifications()->create([
+            'code' => $code,
+            'expired_at' => now()->addHour(),
+            'type' => VerificationTypeEnums::Password,
+            'uses' => 0,
+        ]);
+
+        Mail::to($user)->queue(new PasswordResetVerification($code));
+    }
 }
