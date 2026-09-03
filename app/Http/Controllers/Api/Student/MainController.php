@@ -12,6 +12,7 @@ use App\Http\Resources\RatingResource;
 use App\Http\Services\PaymobService;
 use App\Models\Course;
 use App\Models\Lesson;
+use App\Models\Order;
 use App\Models\Teacher;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -119,7 +120,7 @@ class MainController extends Controller
 
     /**
      * Paymob server-to-server transaction callback.
-     * This is the only endpoint allowed to change payment state and enroll a student.
+     * This endpoint is intentionally independent from customer authentication.
      */
     public function callbackPayment(Request $request)
     {
@@ -144,7 +145,8 @@ class MainController extends Controller
             return failResponse('invalid request');
         }
 
-        $order = $this->student->orders()
+        $order = Order::query()
+            ->with(['student', 'orderable.teacher'])
             ->where('paymob_order_id', $paymobOrderId)
             ->first();
 
@@ -170,12 +172,13 @@ class MainController extends Controller
         }
 
         DB::transaction(function () use ($order, $transactionId) {
-            $freshOrder = $order->newQuery()->lockForUpdate()->findOrFail($order->id);
+            $freshOrder = Order::query()->lockForUpdate()->with(['student', 'orderable.teacher'])->findOrFail($order->id);
 
             if ($freshOrder->status === PaymentStatusEnums::SUCCESS) {
                 return;
             }
 
+            $student = $freshOrder->student;
             $orderable = $freshOrder->orderable;
 
             $freshOrder->update([
@@ -184,9 +187,9 @@ class MainController extends Controller
             ]);
 
             if ($orderable->getTable() === 'lessons') {
-                $this->student->enrollingLessons()->syncWithoutDetaching([$orderable->id]);
+                $student->enrollingLessons()->syncWithoutDetaching([$orderable->id]);
             } else {
-                $this->student->enrollingCourses()->syncWithoutDetaching([$orderable->id]);
+                $student->enrollingCourses()->syncWithoutDetaching([$orderable->id]);
             }
 
             $total = (float) $freshOrder->amount;
