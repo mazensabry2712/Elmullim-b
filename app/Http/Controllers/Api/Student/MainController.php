@@ -117,6 +117,10 @@ class MainController extends Controller
         ]);
     }
 
+    /**
+     * Paymob server-to-server transaction callback.
+     * This is the only endpoint allowed to change payment state and enroll a student.
+     */
     public function callbackPayment(Request $request)
     {
         $hmac = (string) $request->input('hmac');
@@ -201,7 +205,32 @@ class MainController extends Controller
             );
         });
 
-        return successResponse('payment success and you are enrolled in this course');
+        return successResponse('payment success and you are enrolled');
+    }
+
+    /**
+     * Customer redirect callback. Read-only; it never confirms a payment.
+     */
+    public function paymentResult(Request $request)
+    {
+        $paymobOrderId = (int) $request->input('order');
+
+        if ($paymobOrderId <= 0) {
+            return failResponse('invalid payment reference');
+        }
+
+        $order = $this->student->orders()
+            ->where('paymob_order_id', $paymobOrderId)
+            ->first();
+
+        if (!$order) {
+            return failResponse('not found order');
+        }
+
+        return successResponse('payment status', [
+            'status' => $order->status,
+            'transaction_id' => $order->transaction_id,
+        ]);
     }
 
     public function enrollingLessons()
